@@ -1,0 +1,908 @@
+---
+title: "Clinical value of routine FDG-PET scans as a decision tool for early immunotherapy discontinuation in advanced melanoma"
+subtitle: <center> Survival uni- and multivariate analysis</center>
+author: "Aimilia Schina"
+date: '`r paste("First created on November 2021. Updated on ", format(Sys.Date(), "%d %B %Y"))`'
+output:
+  html_document:
+    css: style.css
+    code_folding: hide
+    #smooth_scroll: yes
+    fig_caption: yes
+    #highlight: textmate
+    #theme: cerulean
+    #theme: simplex
+    toc: yes
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    toc_depth: 5
+    number_sections: true
+    #df_print: paged
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'D:/BIOINF/PROJECTS/2_ANALYSES/18_GIT_PAPERS/FDG_PET_antiPD1_discontinuation')
+```
+
+```{r,warning=F, message=F}
+RNGkind(sample.kind = "Rounding")# related to changes in how set.seet() works
+## Clear R-workspace
+rm(list=ls(all=TRUE))
+# ## Set location of R-script as working directory
+setwd("D:/BIOINF/PROJECTS/2_ANALYSES/18_GIT_PAPERS/FDG_PET_antiPD1_discontinuation")
+
+## Close all graphic devices
+graphics.off()
+#####################
+### Load packages ###
+#####################
+library(pacman)
+pacman::p_load(extrafont,DT,stringr,dplyr,plyr,tibble,tidyverse,strex,data.table,entropy,vegan,ggstatsplot,hrbrthemes,ggstatsplot,reshape, pander, data.table,ggrepel,scales, binfotron,survival,survminer, gridExtra,tidytidbits,survivalAnalysis,gtsummary, Cairo, officer
+)
+extrafont::loadfonts(device="win")
+windowsFonts(sans="Palatino Linotype")
+loadfonts(device="win")
+loadfonts(device="postscript")
+```
+
+```{r,warning=F, message=F}
+###########################
+### Main analysis paths ###
+###########################
+
+
+scriptsPath <- paste0("scripts/")
+projectDataPath <- paste0("data/")
+projectOutDataPath <- paste0("output/data_files/")
+figuresPath <- paste0("output/figures/")
+tablesPath <- paste0("output/tables/")
+sessionInfoPath <- paste0("session_info/")
+
+#####################
+### File suffixes ###
+#####################
+Rdata.suffix <- ".RData"
+
+
+#################
+### Functions ###
+#################
+fmt_pvalue_with_stars <- function(x) {
+  dplyr::case_when(
+    x < 0.001 ~ paste0(style_pvalue(x), " ***"),
+    x < 0.01 ~ paste0(style_pvalue(x), " **"),
+    x < 0.05 ~ paste0(style_pvalue(x), " *"),
+    TRUE ~ style_pvalue(x, digits = 3)
+  )
+}
+
+```
+
+# Data
+
+## Loading patient data
+
+```{r dataLoad,warning=F, message=F,eval=TRUE}
+# Loading CSV file with patient info
+
+petDF <- read.csv(file = paste0(projectDataPath,"pet_data_updated.csv"), header = TRUE, check.names = FALSE)
+
+
+# Correct First column name
+colnames(petDF)[1] <- "patient_id"
+```
+
+
+* Check that all columns have no spaces etc, especially character columns, 
+* transform character columns to factors. 
+* Check if all factors are ok.
+* Check numerical columns.
+
+```{r,warning=F, message=F,eval=TRUE}
+## Numeric columns
+num_cols <- unlist(lapply(petDF, is.numeric))         # Identify numeric columns
+# num_cols
+# So LDH column was loaded as character, we need to transform
+petDF$LDH <- as.numeric(petDF$LDH)
+which(is.na(petDF$LDH))
+
+## Assign valuw of zero as NA
+zero_NA <- which(petDF$LDH==0)
+petDF$LDH[zero_NA] <- NA
+which(is.na(petDF$LDH))
+
+# data_num <- petDF[ , num_cols]                        # Subset numeric columns of data
+# # data_num  
+# colnames(data_num )
+
+## There are also numeric columns (0,1) that should be converted to factors
+petDF$`Treatment type` <- ifelse(petDF$`Treatment type`=="Ipilimumab Nivolumab","Ipilimumab + Nivolumab",
+                                 ifelse(petDF$`Treatment type`=="Anti-PD-1+experimental","Anti-PD-1 + experimental",petDF$`Treatment type`))
+                                 
+petDF$melanoma_diagnosis <- ifelse(petDF$melanoma_diagnosis=="Cutaneous Melanoma","Cutaneous",
+                                   ifelse(petDF$melanoma_diagnosis=="Mucosal Melanoma","Mucosal",
+                                          ifelse(petDF$melanoma_diagnosis=="Melanoma â€“ unknown primary","Unknown primary",NA)))
+petDF$braf_mutationsstatus <- ifelse(petDF$braf_mutationsstatus=="BRAF wild-type","Wild-type",
+                                    petDF$braf_mutationsstatus)
+petDF$`Performance Status` <- ifelse(petDF$`Performance Status`==0, "PS0",
+                                     ifelse(petDF$`Performance Status` %in% c(1,2),"PS1 - PS2",
+                                     petDF$`Performance Status`))
+petDF$`Performance Status` <- factor(petDF$`Performance Status`, levels = c("PS0","PS1 - PS2"))
+petDF$`High dose immunosuppressants (0=no; 1=Yes)` <- factor(petDF$`High dose immunosuppressants (0=no; 1=Yes)`, levels = c(0,1))
+petDF$M_stage <- ifelse(petDF$M_stage %in% c("M1a","M1b"),"M1a-M1b",
+                        ifelse(petDF$M_stage %in% c("M1c","M1d"),"M1c-M1d", petDF$M_stage))
+
+petDF$M_stage <- factor(petDF$M_stage, levels=c("M1c-M1d","M1a-M1b"))
+petDF$`1st line (yes/no)` <- factor(petDF$`1st line (yes/no)`, levels=c("No","Yes"))
+petDF$`PET positive lesions Yes/No` <- factor(petDF$`PET positive lesions Yes/No`,levels = c("Yes","No"))
+
+## Character columns
+char_cols <- unlist(lapply(petDF, is.character))         # Identify character columns
+# char_cols
+# Transform to factors
+petDF[char_cols] <- lapply(petDF[char_cols], as.factor)  
+# Check again which columns numeric
+num_cols <- unlist(lapply(petDF, is.numeric))         # Identify numeric columns
+# petDF[num_cols]
+
+# Fix patient id
+petDF$patient_id <- as.character(petDF$patient_id)
+
+## REMOVE NA LDH values and BRAF uknown mut samples
+petDF <- petDF %>% tidyr::drop_na(LDH) %>% droplevels()
+
+### Transform LDH and age to categorical
+## LDH
+# ULN=205 for 0-69 patients
+# ULN=255 for patients >=70
+LDH.cat <- petDF %>% select(age_1st_treat,LDH) %>% dplyr::mutate(LDHcat = case_when(age_1st_treat <= 69 & LDH >=205 ~"high",
+                                      age_1st_treat <=69 & LDH < 205 ~ "low",
+                                      age_1st_treat >=70 & LDH >= 255 ~ "high",
+                                      age_1st_treat >=70 & LDH <255 ~ "low",
+                                      TRUE ~ as.character(LDH))) %>% pull(LDHcat)
+
+petDF$`LDH (high/low)` <- factor(LDH.cat, levels=c("high","low"))
+
+## Age
+# depending on distribution select mean or median
+# The more skewed the distribution, the greater the difference between the median and mean, and the greater emphasis should be placed on using the median as opposed to the mean.
+hist(petDF$age_1st_treat) # we are using the MEDIAN
+
+# Median is the preferred measure of central tendency when: There are a few extreme scores in the distribution of the data
+# The more skewed the distribution, the greater the difference between the median and mean, and the greater emphasis should be placed on using the median as opposed to the mean.
+
+age_thres <- median(petDF$age_1st_treat)
+age_cat <-petDF %>% select(age_1st_treat) %>% dplyr::mutate(age = case_when(age_1st_treat >= age_thres ~ "old",
+                                        age_1st_treat < age_thres ~ "young",
+                                        TRUE~ as.character(age_1st_treat))) %>% pull(age)
+
+petDF$`Age (old/young)` <- factor(age_cat, levels=c("old","young"))
+
+# Remove BRAF uknown mut
+# petDF$braf_mutationsstatus
+# which(petDF$braf_mutationsstatus=="Unknown")
+# dim(petDF)
+# 
+# petDF[-which(petDF$braf_mutationsstatus=="Unknown"),] %>% head()
+petDF <- petDF[-which(petDF$braf_mutationsstatus=="Unknown"),] %>% droplevels()
+
+petDF$braf_mutationsstatus <- factor(petDF$braf_mutationsstatus, levels = c("Mutated","Wild-type"))
+
+# petDF$`Treatment type` <- factor(petDF$`Treatment type`, levels = c("Anti-PD-1","Ipilimumab Nivolumab","Anti-PD-1+experimental"))
+```
+
+
+Now select the following columns we will work with for the uni-/multivariate survival models:
+
+
+1. Gender
+2. Age
+3. Performance status
+4. LDH
+5. BRAF status
+6. Disease Stage
+7. Immunotherapy
+8. Treatment duration in months
+9. FDG-PET positive lesions at treatment discontinuation
+10. 1st line treatment
+
+total of 10 possible prognostic parameters.
+
+
+```{r,warning=F, message=F,eval=TRUE}
+colnames(petDF)[6:11] <- c("OS (days)","OS (months)","Alive (0) or Dead (1)","melanoma-specific OS (days)","melanoma-specific OS (months)","Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)")
+
+
+petDF.final <- petDF %>% select(patient_id,gender,`Age (old/young)`,
+                                `Performance Status`,
+                                `LDH (high/low)`, braf_mutationsstatus, M_stage,
+                                `Treatment type`,
+                                `Treatment duration monthsMonths`,
+                                `1st line (yes/no)`,
+                                `PET positive lesions Yes/No`,
+                                `Alive (0) or Dead (1)`,
+                                `OS (days)`,
+                                `OS (months)`)
+
+# I will remove patients with NA
+
+petDF.final.c <- petDF.final %>% filter(complete.cases(.))
+```
+
+
+```{r,warning=F, message=F,eval=TRUE}
+datatable(petDF.final, extensions = 'Buttons', options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'excel', 'csv' ),
+    scrollX=TRUE,
+    pageLength=15
+  ),
+  caption = 'Survival data and other prognostic parameters'
+)
+```
+
+As a first step, we want to get a feeling for the data and have a look at the median survival. We need to tell the analyse_survival method which columns to regard as time and censoring indicator. We do that with the vars() method from dplyr, which allows to give the plain variable names. Passing column names as strings is also possible.
+
+```{r,warning=F, message=F,eval=TRUE}
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`))  %>%
+  print()#timespan_unit="months"
+```
+
+# Multiple Univariate Analyses
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=13, fig.height=8}
+covariate_names <- c(gender="Gender",
+                     `gender:F`="Female",
+                     `gender:M`="Male",
+                      `Age (old/young)`="Age",
+                     `Age (old/young):old`="Age ≥ median value",
+                     `Age (old/young):young`="Age < median value",
+                     `Performance Status`="Performance Status",
+                     `Performance Status:PS0`="Performance Status 0",
+                     `Performance Status:PS1 - PS2`="Performance Status > 0",
+                     `LDH (high/low)` = "LDH level",
+                     `LDH (high/low):high` = "LDH level ≥ ULN",
+                     `LDH (high/low):low` = "LDH level ≤ ULN",
+                      braf_mutationsstatus = "BRAF status",
+                     `braf_mutationsstatus:Wild-type` = "BRAF wild-type",
+                     `braf_mutationsstatus:Mutated` = "BRAF mutated",
+                     M_stage = "Disease Stage",
+                     `M_stage:M1a-M1b` = "AJCC stage M1a/M1b",
+                    `M_stage:M1c-M1d` = "AJCC stage M1c/M1d Stage",
+                     `Treatment type` = "Immunotherapy",
+                     `Treatment type:Anti-PD-1` = "Anti-PD-1",
+                     `Treatment type:Anti-PD-1 + experimental` = "Anti-PD-1 + experimental",
+                      `Treatment type:Ipilimumab + Nivolumab` = "Ipilimumab + nivolumab",
+                     `Treatment duration monthsMonths` = "Treatment duration in months ± SD",
+                     `1st line (yes/no)` = "First line treatment",
+                    `1st line (yes/no):Yes` = "1st line treatment",
+                    `1st line (yes/no):No` = "Not first line treatment",
+                     `PET positive lesions Yes/No` = "FDG-PET positive lesions at treatment discontinuation",
+                    `PET positive lesions Yes/No:Yes` = "Presence of FDG avid lesions at treatment discontinuation",
+                    `PET positive lesions Yes/No:No` = "Absence of FDG avid lesions at treatment discontinuation")
+
+
+covariate_labels <-c(gender="Gender",
+                     `gender:F`="Female",
+                     `gender:M`="Male",
+                      `Age (old/young)`="Age",
+                     `Age (old/young):old`="Age ≥ median value",
+                     `Age (old/young):young`="Age < median value",
+                     `Performance Status`="Performance Status",
+                     `Performance Status:PS0`="Performance Status 0",
+                     `Performance Status:PS1 - PS2`="Performance Status > 0",
+                     `LDH (high/low)` = "LDH level",
+                     `LDH (high/low):high` = "LDH level ≥ ULN",
+                     `LDH (high/low):low` = "LDH level ≤ ULN",
+                      braf_mutationsstatus = "BRAF status",
+                     `braf_mutationsstatus:Wild-type` = "BRAF wild-type",
+                     `braf_mutationsstatus:Mutated` = "BRAF mutated",
+                     M_stage = "Disease Stage",
+                     `M_stage:M1a-M1b` = "AJCC stage M1a/M1b",
+                    `M_stage:M1c-M1d` = "AJCC stage M1c/M1d Stage",
+                     `Treatment type` = "Immunotherapy",
+                     `Treatment type:Anti-PD-1` = "Anti-PD-1",
+                     `Treatment type:Anti-PD-1 + experimental` = "Anti-PD-1 + experimental",
+                      `Treatment type:Ipilimumab + Nivolumab` = "Ipilimumab + nivolumab",
+                     `Treatment duration monthsMonths` = "Treatment duration in months ± SD",
+                     `1st line (yes/no)` = "First line treatment",
+                    `1st line (yes/no):Yes` = "1st line treatment",
+                    `1st line (yes/no):No` = "Not first line treatment",
+                     `PET positive lesions Yes/No` = "FDG-PET positive lesions at treatment discontinuation",
+                    `PET positive lesions Yes/No:Yes` = "Presence of FDG avid lesions at treatment discontinuation",
+                    `PET positive lesions Yes/No:No` = "Absence of FDG avid lesions at treatment discontinuation")
+########################
+map(vars(gender, `Age (old/young)`, `Performance Status`,`LDH (high/low)`,braf_mutationsstatus,
+         M_stage,`Treatment type`,`Treatment duration monthsMonths`,`1st line (yes/no)`,`PET positive lesions Yes/No`), function(by)
+{
+  analyse_multivariate(petDF.final.c,
+                       vars(`OS (days)`, `Alive (0) or Dead (1)`),
+                       covariates = list(by), # covariates expects a list
+                       covariate_name_dict = covariate_names,
+                       covariate_label_dict = covariate_labels)
+}) %>%
+  forest_plot(
+              factor_labeller = covariate_names,
+              endpoint_labeller = c(time="OS"),
+              # orderer = ~order(HR),
+              labels_displayed = c("factor", "n"),#"endpoint", 
+              ggtheme = ggplot2::theme_bw(base_size = 10),
+              #values_displayed = c("HR","CI","p"),
+              HR_x_limits = c(0.01,16),
+              HR_x_breaks = c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,1,2,4,6,8,10,14,16)
+              #p_lessthan_cutoff = 0.05
+              )
+```
+
+## Models results
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+var.names = list(list(gender ~ "Gender"),
+                     list(Age..old.young. ~ "Age group at Dx"),
+                     list(Performance.Status ~ "Performance Status"),
+                     list(LDH..high.low. ~ "LDH level"),
+                     list(braf_mutationsstatus ~ "BRAF status"),
+                     list(M_stage ~ "Disease stage"),
+                     list(Treatment.type ~ "Immunotherapy"),
+                     list(Treatment.duration.monthsMonths ~ "Treatment duration in months ± SD"),
+                     list(X1st.line..yes.no. ~ "First line treatment"),
+                     list(PET.positive.lesions.Yes.No ~ "FDG-PET positive lesions at treatment discontinuation")
+                     )
+
+map(vars(gender, `Age (old/young)`, `Performance Status`,`LDH (high/low)`,braf_mutationsstatus,
+         M_stage,`Treatment type`,`Treatment duration monthsMonths`,`1st line (yes/no)`,`PET positive lesions Yes/No`), function(by)
+{
+  analyse_multivariate(petDF.final.c,
+                       vars(`OS (days)`, `Alive (0) or Dead (1)`),
+                       covariates = list(by), # covariates expects a list
+                       covariate_name_dict = covariate_names,
+                       covariate_label_dict = covariate_labels)
+}) -> results.uni
+
+# Extract results (coxph models) for all univariate analyses
+results.uni.coxph <-lapply(results.uni, function(x) x[["coxph"]])
+
+# gtables.uni.coxph <-lapply(results.uni.coxph, function(x) tbl_regression(x,exponentiate = TRUE,
+#                                              pvalue_fun = ~style_pvalue(.x, digits = 3),
+#                                              label=var.names[[x]]))
+
+gtables.uni.coxph <-lapply(1:length(results.uni.coxph), function(x) tbl_regression(results.uni.coxph[[x]],exponentiate = TRUE,
+                                             pvalue_fun = fmt_pvalue_with_stars,
+                                             label=var.names[[x]])%>%
+  modify_footnote(p.value ~ "*p<0.05; **p<0.01; ***p<0.001"))
+# table.uni.res <- result$coxph %>% tbl_regression(exponentiate = TRUE)
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+tbl_stack(gtables.uni.coxph) %>% as_flex_table()
+
+```
+
+
+## KM plots: all categorical variables
+
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=20, fig.height=12}
+## PET
+
+
+
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`PET positive lesions Yes/No`,
+                   by_label_map=c(`No`="PET -",
+                                  `Yes`="PET +")) ->
+result.pet
+
+
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=20, fig.height=12}
+
+default_args <- list(break.time.by="breakByHalfYear",
+                     xlab=".OS.months",
+                     legend.title="Performance Status",
+                     hazard.ratio=TRUE,
+                     risk.table=TRUE,
+                     table.layout="clean",
+                     ggtheme=ggplot2::theme_bw(10))
+
+#
+list(result.pet,
+     petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`Performance Status`),
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`gender`),
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`Age (old/young)`),
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`LDH (high/low)`),
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`braf_mutationsstatus`),
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`M_stage`),
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`Treatment type`),
+petDF.final.c %>%
+  analyse_survival(vars(`OS (days)`, `Alive (0) or Dead (1)`), by=`1st line (yes/no)`)
+) %>%
+  kaplan_meier_grid(nrow=3,
+                    default_args,
+                    # break.time.by="breakByQuarterYear",
+                    mapped_plot_args=list(
+                      legend.title=c("FDG-PET positive lesions at treatment", "Performance Status","Gender", "Age group at Dx","LDH level", "BRAF status","Disease Stage","Immunotherapy","First line treatment"),
+                      title=c("A", "B","C","D","E","F","G","H","I")
+                    )) %>%
+  print
+```
+
+# Multivariate Survival Analysis {.tabset .tabset-fade .tabset-pills}
+
+```{r,warning=F, message=F,eval=TRUE}
+petDF.final.c %>%
+  #mutate(`PET positive lesions Yes/No`=rename_factor(`PET positive lesions Yes/No`, `Yes` = "PET +", `No` = "PET -")) %>%
+  analyse_multivariate(vars(`OS (days)`, `Alive (0) or Dead (1)`),
+                       covariates = vars(gender, `Age (old/young)`, `Performance Status`,`LDH (high/low)`,braf_mutationsstatus,
+         M_stage,`Treatment type`,`Treatment duration monthsMonths`,`1st line (yes/no)`,`PET positive lesions Yes/No`),
+                       covariate_name_dict = covariate_names,
+                        covariate_label_dict = covariate_names) ->
+  result
+
+# print(result$summary)
+
+table.res <- result$coxph %>% tbl_regression(exponentiate = TRUE,
+                                             pvalue_fun = fmt_pvalue_with_stars,#~style_pvalue(.x, digits = 3)
+                                             label=list(gender ~ "Gender",
+                     Age..old.young. ~ "Age group at Dx",
+                     Performance.Status ~ "Performance Status",
+                     LDH..high.low. ~ "LDH level",
+                     braf_mutationsstatus ~ "BRAF status",
+                     M_stage ~ "Disease stage",
+                     Treatment.type ~ "Immunotherapy",
+                     Treatment.duration.monthsMonths ~ "Treatment duration in months ± SD",
+                     X1st.line..yes.no. ~ "First line treatment",
+                     PET.positive.lesions.Yes.No ~ "FDG-PET positive lesions at treatment discontinuation"
+                     )) %>%
+  modify_footnote(p.value ~ "*p<0.05; **p<0.01; ***p<0.001")
+```
+
+
+
+
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=18, fig.height=8}
+forest_plot(result,
+            factor_labeller = covariate_names,
+              endpoint_labeller = c(time="OS"),
+              # orderer = ~order(HR),
+              labels_displayed = c("factor", "n"),#"endpoint", 
+              ggtheme = ggplot2::theme_bw(base_size = 10),
+            relative_widths = c(1, 1.5, 1),
+            HR_x_breaks = c(0.25, 0.5, 0.75, 1, 1.5, 2,4,6,8))
+
+```
+
+
+## Model results
+
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+table.res %>% as_flex_table()
+
+```
+
+# Melanoma-specific {.tabset .tabset-fade .tabset-pills}
+
+
+
+```{r,warning=F, message=F,eval=TRUE}
+petDF.final.m <- petDF %>% select(patient_id,gender,`Age (old/young)`,
+                                `Performance Status`,
+                                `LDH (high/low)`, braf_mutationsstatus, M_stage,
+                                `Treatment type`,
+                                `Treatment duration monthsMonths`,
+                                `1st line (yes/no)`,
+                                `PET positive lesions Yes/No`,
+                                `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`,
+                                `melanoma-specific OS (days)`,
+                                `melanoma-specific OS (months)`)
+
+# Remove patients with NA
+petDF.final.m.c <- petDF.final.m %>% filter(complete.cases(.))
+```
+
+As a first step, we want to get a feeling for the data and have a look at the median survival. We need to tell the analyse_survival method which columns to regard as time and censoring indicator. We do that with the vars() method from dplyr, which allows to give the plain variable names. Passing column names as strings is also possible.
+
+```{r,warning=F, message=F,eval=TRUE}
+
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`))  %>%
+  print()#timespan_unit="months"
+```
+
+## Multiple Univariate Analyses {.tabset .tabset-fade .tabset-pills}
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=18, fig.height=8}
+covariate_names <- c(gender="Gender",
+                     `gender:F`="Female",
+                     `gender:M`="Male",
+                      `Age (old/young)`="Age",
+                     `Age (old/young):old`="Age >= median value",
+                     `Age (old/young):young`="Age < median value",
+                     `Performance Status`="Performance Status",
+                     `Performance Status:PS0`="Performance Status 0",
+                     `Performance Status:PS1 - PS2`="Performance Status > 0",
+                     `LDH (high/low)` = "LDH level",
+                     `LDH (high/low):high` = "LDH level >= ULN",
+                     `LDH (high/low):low` = "LDH level < ULN",
+                      braf_mutationsstatus = "BRAF status",
+                     `braf_mutationsstatus:Wild-type` = "BRAF wild-type",
+                     `braf_mutationsstatus:Mutated` = "BRAF mutated",
+                     M_stage = "Disease Stage",
+                     `M_stage:M1a-M1b` = "AJCC stage M1a/M1b",
+                    `M_stage:M1c-M1d` = "AJCC stage M1c/M1d Stage",
+                     `Treatment type` = "Immunotherapy",
+                     `Treatment type:Anti-PD-1` = "Anti-PD-1",
+                     `Treatment type:Anti-PD-1 + experimental` = "Anti-PD-1 + experimental",
+                      `Treatment type:Ipilimumab + Nivolumab` = "Ipilimumab + nivolumab",
+                     `Treatment duration monthsMonths` = "Treatment duration in months ± SD",
+                     `1st line (yes/no)` = "First line treatment",
+                    `1st line (yes/no):Yes` = "1st line treatment",
+                    `1st line (yes/no):No` = "Not first line treatment",
+                     `PET positive lesions Yes/No` = "FDG-PET positive lesions at treatment discontinuation",
+                    `PET positive lesions Yes/No:Yes` = "Presence of FDG avid lesions at treatment discontinuation",
+                    `PET positive lesions Yes/No:No` = "Absence of FDG avid lesions at treatment discontinuation")
+
+map(vars(gender, `Age (old/young)`, `Performance Status`,`LDH (high/low)`,braf_mutationsstatus,
+         M_stage,`Treatment type`,`Treatment duration monthsMonths`,`1st line (yes/no)`,`PET positive lesions Yes/No`), function(by)
+{
+  analyse_multivariate(petDF.final.m.c,
+                       vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`),
+                       covariates = list(by), # covariates expects a list
+                       covariate_name_dict = covariate_names)
+}) %>%
+  forest_plot(factor_labeller = covariate_names,
+              endpoint_labeller = c(time="OS"),
+              # orderer = ~order(HR),
+              labels_displayed = c("factor", "n"),#"endpoint", 
+              ggtheme = ggplot2::theme_bw(base_size = 10))
+```
+
+### Models results
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+map(vars(gender, `Age (old/young)`, `Performance Status`,`LDH (high/low)`,braf_mutationsstatus,
+         M_stage,`Treatment type`,`Treatment duration monthsMonths`,`1st line (yes/no)`,`PET positive lesions Yes/No`), function(by)
+{
+  analyse_multivariate(petDF.final.m.c,
+                       vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`),
+                       covariates = list(by), # covariates expects a list
+                       covariate_name_dict = covariate_names)
+}) -> results.uni.m
+
+# Extract results (coxph models) for all univariate analyses
+# results.uni.coxph.m <-lapply(results.uni.m, function(x) x[["coxph"]])
+# 
+# gtables.uni.coxph.m <-lapply(results.uni.coxph.m, function(x) tbl_regression(x,exponentiate = TRUE,
+#                                              pvalue_fun = ~style_pvalue(.x, digits = 3)))
+# # table.uni.res <- result$coxph %>% tbl_regression(exponentiate = TRUE)
+
+results.uni.coxph.m <-lapply(results.uni.m, function(x) x[["coxph"]])
+
+# gtables.uni.coxph <-lapply(results.uni.coxph, function(x) tbl_regression(x,exponentiate = TRUE,
+#                                              pvalue_fun = ~style_pvalue(.x, digits = 3),
+#                                              label=var.names[[x]]))
+
+gtables.uni.coxph.m <-lapply(1:length(results.uni.coxph.m), function(x) tbl_regression(results.uni.coxph.m[[x]],exponentiate = TRUE,
+                                             pvalue_fun = fmt_pvalue_with_stars,
+                                             label=var.names[[x]])%>%
+  modify_footnote(p.value ~ "*p<0.05; **p<0.01; ***p<0.001"))
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+tbl_stack(gtables.uni.coxph.m) %>% as_flex_table()
+
+```
+
+### KM plots: all categorical variables
+
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=22, fig.height=12}
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`PET positive lesions Yes/No`,
+                   by_label_map=c(`No`="PET -",
+                                  `Yes`="PET +")) ->
+result.pet
+
+
+default_args <- list(break.time.by="breakByHalfYear",
+                     xlab=".OS.months",
+                     legend.title="Performance Status",
+                     hazard.ratio=TRUE,
+                     risk.table=TRUE,
+                     table.layout="clean",
+                     ggtheme=ggplot2::theme_bw(10))
+
+
+
+list(result.pet,
+     petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`Performance Status`),
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`gender`),
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`Age (old/young)`),
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`LDH (high/low)`),
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`braf_mutationsstatus`),
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`M_stage`),
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`Treatment type`),
+petDF.final.m.c %>%
+  analyse_survival(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`), by=`1st line (yes/no)`)
+) %>%
+  kaplan_meier_grid(nrow=3,
+                    default_args,
+                    # break.time.by="breakByQuarterYear",
+                    mapped_plot_args=list(
+                      legend.title=c("FDG-PET positive lesions at treatment", "Performance Status","Gender", "Age group at Dx","LDH level", "BRAF status","Disease Stage","Immunotherapy","First line treatment"),
+                      title=c("A", "B","C","D","E","F","G","H","I")
+                    )) %>%
+  print
+
+```
+## Multivariate Survival Analysis {.tabset .tabset-fade .tabset-pills}
+
+```{r,warning=F, message=F,eval=TRUE}
+
+petDF.final.m.c %>%
+  #mutate(`PET positive lesions Yes/No`=rename_factor(`PET positive lesions Yes/No`, `Yes` = "PET +", `No` = "PET -")) %>%
+  analyse_multivariate(vars(`melanoma-specific OS (days)`, `Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)`),
+                       covariates = vars(gender, `Age (old/young)`, `Performance Status`,`LDH (high/low)`,braf_mutationsstatus,
+         M_stage,`Treatment type`,`Treatment duration monthsMonths`,`1st line (yes/no)`,`PET positive lesions Yes/No`),
+                       covariate_name_dict = covariate_names) ->
+  result
+
+# print(result$summary)
+
+
+```
+
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=20, fig.height=8}
+forest_plot(result,
+            factor_labeller = covariate_names,
+              endpoint_labeller = c(time="OS"),
+              # orderer = ~order(HR),
+              labels_displayed = c("factor", "n"),#"endpoint", 
+              ggtheme = ggplot2::theme_bw(base_size = 16),
+            relative_widths = c(1, 1.5, 1),
+            HR_x_breaks = c(0.25, 0.5, 0.75, 1, 1.5, 2,4,6,8))
+```
+
+```{r,warning=F, message=F, fig.width=8, fig.height=10}
+bp <- forest_plot(result,
+            factor_labeller = covariate_names,
+              endpoint_labeller = c(time="OS"),
+              # orderer = ~order(HR),
+              labels_displayed = c("factor", "n"),#"endpoint",
+              ggtheme = ggplot2::theme_bw(base_size = 16),
+            relative_widths = c(1, 1.5, 1),
+            HR_x_breaks = c(0.25, 0.5, 0.75, 1, 1.5, 2,4,6,8))
+
+
+
+
+cairo_pdf(filename = paste0(figuresPath,"Supp_Figure_1.pdf"),family = "Arial",width = 15, height=8)
+bp
+dev.off()
+
+
+```
+
+### Model results
+
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+table.res <- result$coxph %>% tbl_regression(exponentiate = TRUE,
+                                             pvalue_fun = fmt_pvalue_with_stars,
+                                             label= list(gender ~ "Gender",
+                     Age..old.young. ~ "Age group at Dx",
+                     Performance.Status ~ "Performance Status",
+                     LDH..high.low. ~ "LDH level",
+                     braf_mutationsstatus ~ "BRAF status",
+                     M_stage ~ "Disease stage",
+                     Treatment.type ~ "Immunotherapy",
+                     Treatment.duration.monthsMonths ~ "Treatment duration in months ± SD",
+                     X1st.line..yes.no. ~ "First line treatment",
+                     PET.positive.lesions.Yes.No ~ "FDG-PET positive lesions at treatment discontinuation"
+                     ))%>%
+  modify_footnote(p.value ~ "*p<0.05; **p<0.01; ***p<0.001")
+table.res %>% as_flex_table()
+
+```
+
+
+# Patient Characteristics - groups comparisons
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+# tbl_summary(petDF.final %>% select(-patient_id,-`Alive (0) or Dead (1)`,-`OS (days)`,-`OS (months)`))
+
+petDF <- read.csv(file=paste0(projectDataPath,"pet_data_updated.csv"), header = TRUE,check.names = FALSE)
+# head(petDF)
+# colnames(petDF)
+
+# Correct First column name
+colnames(petDF)[1] <- "patient_id"
+
+## Numeric columns
+num_cols <- unlist(lapply(petDF, is.numeric))         # Identify numeric columns
+# num_cols
+# So LDH column was loaded as character, we need to transform
+petDF$LDH <- as.numeric(petDF$LDH)
+# which(is.na(petDF$LDH))
+## Assign valuw of zero as NA
+zero_NA <- which(petDF$LDH==0)
+petDF$LDH[zero_NA] <- NA
+# which(is.na(petDF$LDH))
+
+# data_num <- petDF[ , num_cols]                        # Subset numeric columns of data
+# # data_num  
+# colnames(data_num )
+
+## There are also numeric columns (0,1) that should be converted to factors
+petDF$`Treatment type` <- ifelse(petDF$`Treatment type`=="Ipilimumab Nivolumab","Ipilimumab+Nivolumab",petDF$`Treatment type`)
+petDF$melanoma_diagnosis <- ifelse(petDF$melanoma_diagnosis=="Cutaneous Melanoma","Cutaneous",
+                                   ifelse(petDF$melanoma_diagnosis=="Mucosal Melanoma","Mucosal",
+                                          ifelse(petDF$melanoma_diagnosis=="Melanoma â€“ unknown primary","Unknown primary",NA)))
+petDF$braf_mutationsstatus <- ifelse(petDF$braf_mutationsstatus=="BRAF wild-type","Wild-type",
+                                    petDF$braf_mutationsstatus)
+petDF$`Performance Status` <- ifelse(petDF$`Performance Status`==0, "PS 0",
+                                     ifelse(petDF$`Performance Status` ==1,"PS 1",
+                                            ifelse(petDF$`Performance Status` ==2,"PS 2",
+                                     petDF$`Performance Status`)))
+petDF$`Performance Status` <- factor(petDF$`Performance Status`, levels = c("PS 0","PS 1","PS 2"))
+petDF$`High dose immunosuppressants (0=no; 1=Yes)` <- factor(petDF$`High dose immunosuppressants (0=no; 1=Yes)`, levels = c(0,1))
+# petDF$M_stage <- ifelse(petDF$M_stage %in% c("M1a","M1b"),"M1a-M1b",
+#                         ifelse(petDF$M_stage %in% c("M1c","M1d"),"M1c-M1d", petDF$M_stage))
+petDF$M_stage <- factor(petDF$M_stage, levels=c("M1a","M1b","M1c","M1d"))
+petDF$`1st line (yes/no)` <- factor(petDF$`1st line (yes/no)`, levels=c("Yes","No"))
+petDF$`PET positive lesions Yes/No` <- factor(petDF$`PET positive lesions Yes/No`,levels = c("Yes","No"))
+
+## Character columns
+char_cols <- unlist(lapply(petDF, is.character))         # Identify numeric columns
+# char_cols
+# Transform to factors
+petDF[char_cols] <- lapply(petDF[char_cols], as.factor)  
+# Check again which columns numeric
+num_cols <- unlist(lapply(petDF, is.numeric))         # Identify numeric columns
+# petDF[num_cols]
+
+# Fix patient id
+petDF$patient_id <- as.character(petDF$patient_id)
+
+## REMOVE NA LDH values and BRAF uknown mut samples
+# petDF <- petDF %>% tidyr::drop_na(LDH) %>% droplevels()
+
+### Transform LDH and age to categorical
+## LDH
+# ULN=205 for 0-69 patients
+# ULN=255 for patients >=70
+LDH.cat <- petDF %>% select(age_1st_treat,LDH) %>% dplyr::mutate(LDHcat = case_when(age_1st_treat <= 69 & LDH >=205 ~">ULN",
+                                      age_1st_treat <=69 & LDH < 205 ~ "<ULN",
+                                      age_1st_treat >=70 & LDH >= 255 ~ ">ULN",
+                                      age_1st_treat >=70 & LDH <255 ~ "<ULN",
+                                      TRUE ~ as.character(LDH))) %>% pull(LDHcat)
+
+petDF$`LDH (high/low)` <- factor(LDH.cat, levels=c("<ULN",">ULN"))
+
+petDF$gender <- ifelse(petDF$gender=="F","Female",
+                       ifelse(petDF$gender=="M","Male",
+                              petDF$gender))
+petDF$gender <- factor(petDF$gender, levels = c("Male","Female"))
+
+petDF$braf_mutationsstatus <-factor(petDF$braf_mutationsstatus, levels=c("Wild-type","Mutated", "Unknown"))
+
+petDF$`Treatment type` <- factor(petDF$`Treatment type`, levels=c("Anti-PD-1",
+                                                                  "Ipilimumab+Nivolumab",
+                                                                  "Anti-PD-1+experimental"
+                                                                  ))
+
+# petDF$`1st line (yes/no)`
+## Age
+# depending on distribution select mean or median
+# The more skewed the distribution, the greater the difference between the median and mean, and the greater emphasis should be placed on using the median as opposed to the mean.
+# hist(petDF$age_1st_treat) # we are using the MEDIAN
+# # Median is the preferred measure of central tendency when: There are a few extreme scores in the distribution of the data
+# # The more skewed the distribution, the greater the difference between the median and mean, and the greater emphasis should be placed on using the median as opposed to the mean.
+# 
+# age_thres <- median(petDF$age_1st_treat)
+# age_cat <-petDF %>% select(age_1st_treat) %>% dplyr::mutate(age = case_when(age_1st_treat >= age_thres ~ "old",
+#                                         age_1st_treat < age_thres ~ "young",
+#                                         TRUE~ as.character(age_1st_treat))) %>% pull(age)
+# 
+# petDF$`Age (old/young)` <- factor(age_cat, levels=c("old","young"))
+# 
+# # Remove BRAF uknown mut
+# petDF$braf_mutationsstatus
+# which(petDF$braf_mutationsstatus=="Unknown")
+# dim(petDF)
+# 
+# petDF[-which(petDF$braf_mutationsstatus=="Unknown"),] %>% head()
+# petDF <- petDF[-which(petDF$braf_mutationsstatus=="Unknown"),] %>% droplevels()
+
+# petDF$braf_mutationsstatus <- factor(petDF$braf_mutationsstatus, levels = c("Mutated","Wild-type"))
+
+colnames(petDF)[6:11] <- c("OS (days)","OS (months)","Alive (0) or Dead (1)","melanoma-specific OS (days)","melanoma-specific OS (months)","Melanoma-specific survival (0=not dead for melanoma; 1=dead for melanoma)")
+petDF.table <- petDF %>% select(gender,age_1st_treat,melanoma_diagnosis,
+                                `Performance Status`,
+                                `LDH (high/low)`, braf_mutationsstatus, M_stage,
+                                `Treatment type`,
+                                `Treatment duration monthsMonths`,
+                                `High dose immunosuppressants (0=no; 1=Yes)`,
+                                `1st line (yes/no)`,
+                                `PET positive lesions Yes/No`,group)
+colnames(petDF.table) <- c("Gender","Age","Melanoma diagnosis",
+                           "Performance status", "LDH",
+                           "BRAF status", "Disease Stage", "Immunotherapy",
+                           "Treatment duration in months ± SD", "High dose immunosuppressants",
+                           "First line treatment", "FDG-PET positive lesions at treatment discontinuation","group")
+
+
+# tbl_summary(petDF.table %>% select(-group))
+petDF.table$group <- as.character(petDF.table$group)
+petDF.table$`FDG-PET positive lesions at treatment discontinuation` <- as.character(petDF.table$`FDG-PET positive lesions at treatment discontinuation`)
+
+elect.tox <-petDF.table %>% as_tibble() %>% 
+            tbl_summary(by = `group`) %>% 
+            add_p(pvalue_fun = fmt_pvalue_with_stars) %>%
+            add_overall()
+
+
+petDF.table$`FDG-PET positive lesions at treatment discontinuation` <- ifelse(petDF.table$`FDG-PET positive lesions at treatment discontinuation`== "Yes", "PET+ lesions", 
+                                                                              ifelse(petDF.table$`FDG-PET positive lesions at treatment discontinuation`=="No","PET- lesions",
+                                                                                     petDF.table$`FDG-PET positive lesions at treatment discontinuation`))
+
+pet.lesions <-petDF.table %>% as_tibble() %>% 
+            tbl_summary(by = `FDG-PET positive lesions at treatment discontinuation`) %>%
+            add_p(pvalue_fun = fmt_pvalue_with_stars)%>%
+            add_overall() 
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+elect.tox %>% 
+  modify_footnote(p.value ~ "*p<0.05; **p<0.01; ***p<0.001") %>%
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Group**") %>% as_flex_table()
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+pet.lesions %>%
+  modify_footnote(p.value ~ "*p<0.05; **p<0.01; ***p<0.001") %>%
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**FDG-PET lesions at treatment discontinuation**")  %>% as_flex_table()
+
+sect_properties <- prop_section(
+  page_size = page_size(orient = "landscape",
+    width = 8.3, height = 13.7),
+  type = "continuous",
+  page_margins = page_mar()
+)
+
+pet.lesions %>%
+  modify_footnote(p.value ~ "*p<0.05; **p<0.01; ***p<0.001") %>%
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**FDG-PET lesions at treatment discontinuation**")  %>% as_flex_table() %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"MainTable_1.docx"),pr_section = sect_properties)
+```
+
+
+# Session Info
+
+```{r,warning=F, message=F,eval=TRUE}
+session_info <- sessionInfo()
+writeLines(capture.output(session_info), paste0(sessionInfoPath,"SessionInfo_descriptive_survival_analysis.txt"))
+
+sessionInfo()
+```
